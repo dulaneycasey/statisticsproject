@@ -1,0 +1,62 @@
+---
+title: "Assignment 6, Part 3"
+author: "Casey Dulaney"
+date: "10/25/2021"
+output: html_document
+---
+
+## Load Libraries
+```{r}
+library(ggmap)
+library(geojsonsf)
+library(tmap)
+library(tidyverse)
+library(sf)
+```
+
+## Read Data
+```{r}
+pop <- read_csv("C:/Users/Casey/Documents/GEOG215.FA21/Final_project/Data/tabular/CountyPop.csv")
+```
+
+## Getting a Map
+
+```{r}
+## Read data 
+nc_cty <- geojson_sf("https://opendata.arcgis.com/datasets/d192da4d0ac249fa9584109b1d626286_0.geojson")
+
+## Print structure info
+str(nc_cty)
+
+## Map
+tm_shape(nc_cty) +
+  tm_polygons()
+
+
+## Write as a shapefile
+st_write(nc_cty, "NC_county_polygons_nconemap2.shp") 
+```
+
+
+## Merging
+``` {r}
+tab <- merge(nc_cty, pop, by.x = "CountyName", by.y = "County", all.x = "TRUE")
+```
+
+## Mapping
+
+```{r}
+tm_shape(tab) + 
+  tm_polygons("ShapeSTArea", 
+              style = "jenks", 
+              palette = "YlOrRd",
+              lwd = 0.25,
+              border.col = "black",
+              border.alpha = 0.5,
+              title = "NC County Areas")
+```
+
+
+
+## Explanations
+To spatialize this data, I used the geojsn county files along with the tabular area by county files I found online. I used the merge() function to merge the two tables, and the tmap library to make a chloropleth map. I see that the eastern part of the state has the counties with the highest areas. The west has the smallest areas. 

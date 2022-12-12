@@ -1,0 +1,476 @@
+---
+title: "GEOG 215 Final"
+author: "Casey Dulaney"
+date: "12/3/2021"
+output: 
+  html_document:
+    theme: readable
+    highlight: kate
+    toc: true
+    toc_float: true
+    code_folding: hide
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(tidyverse)
+library(sf)
+library(tmap)
+library(geojsonsf)  
+library(dplyr)
+library(card)
+library(spdep)
+library(spatstat)
+library(maptools)
+library(plotly)
+library(tmaptools)
+library(RColorBrewer)
+library(knitr)
+library(kableExtra)
+```
+
+
+
+
+
+## Introduction
+
+The data found in this project is area of government owned land per county in North Carolina. The types of land classified as "government-owned" included federally-owned land (national parks, national forests, and other nationally protected areas), state-owned land (like state parks and state-owned properties like the DMV), and locally-owned land (including local parks and trails). 
+
+
+## Data Preparation
+
+The data was sourced from the North Carolina Office of State Budget and Management. It came in the form of a GeoJSON file, which was then downloaded and prepped accordingly. The link to the data can be found at the [following address.](https://linc.osbm.nc.gov/explore/dataset/outdoor-recreation-acreage/download/?format=geojson&timezone=America/New_York&lang=en) 
+
+```{r dataprep, message = FALSE, warning = FALSE}
+# Read in Data
+nc_land <- geojson_sf("../Data/sp/CountyLandAcreage.zip")
+nc_pop <- read.csv("../Data/tabular/CountyPopulations.csv")
+
+
+# Merging land shapefile and tabular population data
+nc_land_full <- merge(nc_land, nc_pop, by.x = "area_name", by.y = "coname", all.x = "TRUE")
+
+# Clean Data
+## Subset state-owned land into its own table
+state_owned <- subset(nc_land_full, variable == "State Outdoor Recreation Acreage")
+
+## Subset federally-owned land into its own table
+fed_owned <- subset(nc_land_full, variable == "Federal Outdoor Recreation Acreage")
+
+## Subset locally-owned land into its own table
+local_owned <- subset(nc_land_full, variable == "Local Outdoor Recreation Acreage")
+
+```
+
+***
+
+## Exploratory Spatial Data Analysis
+#### Data Description and Summary
+
+```{r datasummary, message = FALSE, warning = FALSE}
+
+# Number of observations
+numlocal <- nrow(local_owned)
+numstate <- nrow(state_owned)
+numfed <- nrow(fed_owned)
+
+# Central Tendency in Land Area
+avglocal <- mean(local_owned$value)     # mean locally-owned land acreage
+avgstate <- mean(state_owned$value)     # mean state-owned land acreage
+avgfed <- mean(fed_owned$value)       # mean federally-owned land acreage
+
+# Variation in Land Area
+sdlocal <- sd(local_owned$value)       # standard deviation of locally-owned land acreage
+sdstate <- sd(state_owned$value)       # standard deviation of state-owned land acreage
+sdfed <- sd(fed_owned$value)         # standard deviation of federally-owned land acreage
+
+# Central Tendency of Population
+avgpop <- mean(nc_land_full$pop2020)  # mean county population in NC in 2020
+
+# Variation in Population
+sdpop <- sd(nc_land_full$pop2020)    # standard deviation of county population in NC in 2020
+
+# Graph
+qplot(x=value, data=fed_owned, bins=50, xlab="Area of federally-owned land, in square acres", ylab="Number of counties")      # graph of area of  federally-owned land per county
+qplot(x=value, data=local_owned, bins=50, xlab="Area of locally-owned land, in square acres", ylab="Number of counties")    # graph of area of locally-owned land per county
+qplot(x=value, data=state_owned, bins=50, xlab="Area of state-owned land, in square acres", ylab="Number of counties")    # graph of area of state-owned land per county
+```
+
+Here, we see some trends in the data. Firstly, each subsetted table contains 100 observations, representative of the 100 counties in NC. The average area of locally-owned land in a county is `r avglocal` acres. The average area of state owned land in a county is `r avgstate` acres, while the average area of federally-owned land in a county is `r avgfed` acres. From this, we can conclude that federally-owned land dominates North Carolina. However, from the standard deviaiton of `r sdfed` acres, we can see that there is a lot of variation among the counties as it relates to federally-owned land. Looking at the graph, most counties did not have any federally-owned land at all; the mean turned out to be so high because of a major outlier. The skew explains the high standard deviation. The trend of major outliers skewing the data continues when looking at the other datasets as well. The standard deviation of state-owned land was `r sdstate` and for locally-owned land, the standard deviation was `r sdlocal`, both of which were high and imply a lot of variation among the counties. It is also important to note the average county population in NC as of 2020, which was `r avgpop` people; the standard deviation was `r sdpop`. 
+
+```{r descriptivetable, message = FALSE, warning = FALSE}
+# kable table for descriptive statistics
+Data <- c("Local", "State", "Federal")
+Observations <- c(numlocal, numstate, numfed)
+Mean <- c(avglocal, avgstate, avgfed)
+StandardDeviation <- c(sdlocal, sdstate, sdfed)
+tab <- data.frame(Data, Observations, Mean, StandardDeviation)
+
+kable(
+  tab) %>% 
+  kable_styling(bootstrap_options = c("striped", 
+                                      "hover", 
+                                      "condensed", 
+                                      "responsive"), 
+                full_width = T) %>% 
+  scroll_box(width = "60%", 
+             height = "300px", 
+             fixed_thead = TRUE)
+
+```
+
+***
+
+##### Geographic Distribution and Spatial Clustering
+```{r geospatial, message = FALSE, warning = FALSE}
+
+tmap_mode("view")
+
+# Chloropleth Map for Locally-Owned Land
+localtmap <- tm_shape(local_owned) + 
+  tm_polygons("value", 
+              style = "jenks", 
+              palette = "YlOrRd",
+              lwd = 0.25,
+              border.col = "black",
+              border.alpha = 0.5,
+              title = "Locally-Owned Land Acreage in NC")+
+  tm_borders() +
+  tm_basemap(server="OpenStreetMap",alpha=0.5)
+
+# Chloropleth Map for State-Owned Land
+statetmap <- tm_shape(state_owned) + 
+  tm_polygons("value", 
+              style = "jenks", 
+              palette = "YlOrRd",
+              lwd = 0.25,
+              border.col = "black",
+              border.alpha = 0.5,
+              title = "State-Owned Land Acreage in NC")
+
+# Chloropleth Map for Federally-Owned Land
+fedtmap <- tm_shape(fed_owned) + 
+  tm_polygons("value", 
+              style = "jenks", 
+              palette = "YlOrRd",
+              lwd = 0.25,
+              border.col = "black",
+              border.alpha = 0.5,
+              title = "Federally-Owned Land Acreage in NC")
+
+
+# Chloropleth Map for County Population
+poptmap <- tm_shape(fed_owned) + 
+  tm_polygons("pop2020", 
+              style = "jenks", 
+              palette = "YlOrRd",
+              lwd = 0.25,
+              border.col = "black",
+              border.alpha = 0.5,
+              title = "Population per NC County")
+```
+
+
+
+
+***
+
+### Spatial Autocorrelation
+
+```{r autocorrelation, message = FALSE, warning = FALSE}
+
+## Moran's I Test For Locally-Owned Land
+local_owned$local_prop <- local_owned$value / sum(local_owned$value)
+
+local_owned_queen <- poly2nb(local_owned, 
+                           queen = TRUE)
+
+local_owned_queen_weight <-  nb2listw(local_owned_queen, 
+                            style = "B",         
+                            zero.policy = TRUE)  
+
+local_moran <- moran.test(local_owned$local_prop,
+                           local_owned_queen_weight,         
+                           randomisation = TRUE,   
+                           zero.policy = TRUE)  
+
+## Summary
+local_moran
+
+# LISA -- Local Moran's I
+#
+local_lisa <- localmoran(local_owned$local_prop,          local_owned_queen_weight, zero.policy = TRUE) %>% as.data.frame() 
+
+# Scale the input data to deviation from mean
+cDV <- local_owned$local_prop - mean(local_owned$local_prop) 
+
+lagDV <- lag.listw(local_owned_queen_weight, local_owned$local_prop)
+
+# Scale the lag values to deviation from mean
+clagDV <- lagDV - mean(lagDV, na.rm = TRUE)
+
+# Add holder column with all 0s
+local_lisa$Cat <- rep("0", nrow(local_lisa))
+
+# This simply adds a label based on the values
+local_lisa$Cat[which(cDV > 0 & clagDV > 0 & local_lisa[,5] < 0.05)] <- "HH" 
+local_lisa$Cat[which(cDV < 0 & clagDV < 0 & local_lisa[,5] < 0.05)] <- "LL"      
+local_lisa$Cat[which(cDV < 0 & clagDV > 0 & local_lisa[,5] < 0.05)] <- "LH"
+local_lisa$Cat[which(cDV > 0 & clagDV < 0 & local_lisa[,5] < 0.05)] <- "HL"
+
+## SUMMARY of LISA output
+table(local_lisa$Cat)
+
+## Add LISA category column to the spatial data
+## for mapping!
+local_owned$LISACAT <- local_lisa$Cat
+
+# Plot two maps together!
+# First, the chorolpleth map
+local.tmap <- tm_shape(local_owned) + 
+  tm_polygons("local_prop",
+              title = "Proportion of Locally Owned State Land",
+              style = "jenks",
+              palette = "Reds",
+              border.col = "Black",
+              border.alpha = 0.25,
+              legend.hist = TRUE) +
+  tm_layout(legend.outside = TRUE)
+# Second the LISA map
+lisa.tmap <- tm_shape(local_owned) + 
+  tm_polygons("LISACAT", 
+              title = "LISA Category",
+              style = "cat", 
+              palette = c("grey", 
+                          "red",
+                          "lightblue",
+                          "blue"), 
+              border.col = "Black", 
+              border.alpha = 0.25) +
+  tm_layout(legend.outside = TRUE)
+# This command maps them together!
+tmap_arrange(local.tmap, lisa.tmap)  
+
+
+
+
+# State-Owned Analysis
+
+## Moran's I Test For State-Owned Land
+state_owned$state_prop <- state_owned$value / sum(state_owned$value)
+
+state_owned_queen <- poly2nb(state_owned, 
+                           queen = TRUE)
+
+state_owned_queen_weight <-  nb2listw(state_owned_queen, 
+                            style = "B",         
+                            zero.policy = TRUE)  
+
+state_moran <- moran.test(state_owned$state_prop,
+                           state_owned_queen_weight,         
+                           randomisation = TRUE,   
+                           zero.policy = TRUE)  
+## Summary
+state_moran
+
+# LISA -- Local Moran's I
+#
+state_lisa <- localmoran(state_owned$state_prop,          state_owned_queen_weight, zero.policy = TRUE) %>% as.data.frame() 
+
+# Scale the input data to deviation from mean
+cDV <- state_owned$state_prop - mean(state_owned$state_prop) 
+
+lagDV <- lag.listw(state_owned_queen_weight, state_owned$state_prop)
+
+# Scale the lag values to deviation from mean
+clagDV <- lagDV - mean(lagDV, na.rm = TRUE)
+
+# Add holder column with all 0s
+state_lisa$Cat <- rep("0", nrow(state_lisa))
+
+# label based on the values
+state_lisa$Cat[which(cDV > 0 & clagDV > 0 & state_lisa[,5] < 0.05)] <- "HH" 
+state_lisa$Cat[which(cDV < 0 & clagDV < 0 & state_lisa[,5] < 0.05)] <- "LL"      
+state_lisa$Cat[which(cDV < 0 & clagDV > 0 & state_lisa[,5] < 0.05)] <- "LH"
+state_lisa$Cat[which(cDV > 0 & clagDV < 0 & state_lisa[,5] < 0.05)] <- "HL"
+
+## SUMMARY of LISA output
+table(state_lisa$Cat)
+
+## Add LISA category column to the spatial data
+## for mapping!
+state_owned$LISACAT <- state_lisa$Cat
+
+# Plotting both maps
+# Chorolpleth map
+state.tmap <- tm_shape(state_owned) + 
+  tm_polygons("state_prop",
+              title = "Proportion of State Owned State Land",
+              style = "jenks",
+              palette = "Reds",
+              border.col = "Black",
+              border.alpha = 0.25,
+              legend.hist = TRUE) +
+  tm_layout(legend.outside = TRUE)
+# LISA map
+lisa.tmap2 <- tm_shape(state_owned) + 
+  tm_polygons("LISACAT", 
+              title = "LISA Category",
+              style = "cat", 
+              palette = c("grey", 
+                          "red",
+                          "lightblue",
+                          "blue"), 
+              border.col = "Black", 
+              border.alpha = 0.25) +
+  tm_layout(legend.outside = TRUE)
+# Map together
+tmap_arrange(state.tmap, lisa.tmap2)  
+
+
+
+
+# Federal Analysis
+
+## Moran's I Test For Federally-Owned Land
+fed_owned$fed_prop <- fed_owned$value / sum(fed_owned$value)
+
+fed_owned_queen <- poly2nb(fed_owned, 
+                           queen = TRUE)
+
+fed_owned_queen_weight <-  nb2listw(fed_owned_queen, 
+                            style = "B",         
+                            zero.policy = TRUE)  
+
+fed_moran <- moran.test(fed_owned$fed_prop,
+                           fed_owned_queen_weight,         
+                           randomisation = TRUE,   
+                           zero.policy = TRUE)  
+
+## Summary
+fed_moran
+
+# LISA -- Local Moran's I
+#
+fed_lisa <- localmoran(fed_owned$fed_prop,          fed_owned_queen_weight, zero.policy = TRUE) %>% as.data.frame() 
+
+# Scale the input data to deviation from mean
+cDV <- fed_owned$fed_prop - mean(fed_owned$fed_prop) 
+
+lagDV <- lag.listw(fed_owned_queen_weight, fed_owned$fed_prop)
+
+# Scale the lag values to deviation from mean
+clagDV <- lagDV - mean(lagDV, na.rm = TRUE)
+
+# Add holder column with all 0s
+fed_lisa$Cat <- rep("0", nrow(fed_lisa))
+
+# label based on the values
+fed_lisa$Cat[which(cDV > 0 & clagDV > 0 & fed_lisa[,5] < 0.05)] <- "HH" 
+fed_lisa$Cat[which(cDV < 0 & clagDV < 0 & fed_lisa[,5] < 0.05)] <- "LL"      
+fed_lisa$Cat[which(cDV < 0 & clagDV > 0 & fed_lisa[,5] < 0.05)] <- "LH"
+fed_lisa$Cat[which(cDV > 0 & clagDV < 0 & fed_lisa[,5] < 0.05)] <- "HL"
+
+## SUMMARY of LISA output
+table(fed_lisa$Cat)
+
+## Add LISA category column to the spatial data
+## for mapping!
+fed_owned$LISACAT <- fed_lisa$Cat
+
+# Plot two maps together
+# Chorolpleth map
+fed.tmap <- tm_shape(fed_owned) + 
+  tm_polygons("fed_prop",
+              title = "Proportion of Federally-Owned State Land",
+              style = "jenks",
+              palette = "Reds",
+              border.col = "Black",
+              border.alpha = 0.25,
+              legend.hist = TRUE) +
+  tm_layout(legend.outside = TRUE)
+# LISA map
+lisa.tmap3 <- tm_shape(fed_owned) + 
+  tm_polygons("LISACAT", 
+              title = "LISA Category",
+              style = "cat", 
+              palette = c("grey", 
+                          "red",
+                          "lightblue",
+                          "blue"), 
+              border.col = "Black", 
+              border.alpha = 0.25) +
+  tm_layout(legend.outside = TRUE)
+# Map both
+tmap_arrange(fed.tmap, lisa.tmap3)  
+```
+For the Moran's I test for the locally-owned land, the coefficient was at .05, meaning the proportion of land in the state that is locally-owned was more clustered on the county level than dispersed. For the state-owned land, the coefficient was at .275, meaning the state-owned land is more clustered than dispersed. The coefficient for federally-owned land was .465, which indicates federally-owned land was more clustered than dispersed. 
+
+The p-value for the locally-owned Moran's I test is relatively low. Depending on the alpha level used, we could or could not reject the null hypothesis. If we were to reject the null hypothesis, we could conclude that the results of the test were unlikely to occur by chance. On the other hand, the p-values for the state-owned and federally-owned land were both low enough to definitively conclude that these results probably did not occur by chance. 
+
+Based on the LISA test for the locally-owned data, 3 counties have HH results and 5 have LH results. Those three counties had high spatial autocorrelation (and therefore, high acreage of locally-owned land compared to state totals), and so did their neighbors. The LH counties were outliers, meaning they had low acreage of locally-owned land while their neighbors had high acreages. For state-owned, 5 were HH and 7 were LH, similarly indicating that 5 states were clustered in areas of high proportions of state-owned land. For the federally-owned dataset, 12 were in a HH cluster. 
+
+
+***
+
+##### Research Question and Analysis
+
+In response to the question "is there a relationship between population and land use," we can use simple linear regression.
+
+First, to see if there is a relationship between a county's population and the amount of locally-owned land:
+
+```{r localmod, message = FALSE, warning = FALSE}
+# Linear model for locally-owned land and population
+localmod <- lm(pop2020~value, data=local_owned)
+summary(localmod)
+plot(local_owned$value, local_owned$pop2020)
+abline(coef(localmod))
+```
+
+The R-squared value for this linear model is .8387, which implies a strong positive correlation, meaning that as a county's population increases, the amount of locally-owned land also increases. Because of the low p-value, there is extremely strong evidence that this correlation did not occur by chance. 
+
+Next, we can use a linear model to examine the relationship between state and federally-owned land and county population. 
+
+```{r statefedmod, message = FALSE, warning = FALSE}
+# linear model for state-owned land and population
+statemod <- lm(pop2020~value, data=state_owned)
+summary(statemod)
+
+# Plotting the state model
+plot(state_owned$value, state_owned$pop2020)
+abline(coef(statemod))
+
+
+# linear model for federally-owned land and population
+fedmod <- lm(pop2020~value, data=fed_owned)
+summary(fedmod)
+
+# Plotting the Federal Model
+plot(fed_owned$value, fed_owned$pop2020)
+abline(coef(fedmod))
+```
+
+Interestingly, there does not appear to be a similar relationship among the state-owned land and federally-owned land. Both models show low R-squared values and high p-values, implying that there is a weak or non-existent correlation. 
+
+
+***
+
+
+## Conclusion
+
+In conclusion, locally-owned, state-owned, and federally-owned land in the state of North Carolina show different spatial patterns. Federally-owned land areas seem to be more clustered than state and local areas, while locally-owned land has more of a relationship with population than federal and state land.
+
+
+*****************************
+
+#### Word Count
+```{r  wordcount, echo = FALSE, message = FALSE}
+wordcountaddin:::text_stats() %>%
+  kable_styling(bootstrap_options = c("striped",
+                                      "hover",
+                                      "condensed",
+                                      "responsive"),
+                full_width = F)
+```

@@ -1,0 +1,61 @@
+---
+title: "Working Data"
+author: "Casey Dulaney"
+date: "10/13/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+# Load Libraries
+``` {r}
+library(sf)
+library(tidyverse)
+library(tmap)
+```
+
+
+
+# Read in Data
+``` {r} 
+forest <- st_read("../Data/sp/CountyForest/Counties.shp")
+farms <- read_csv("../Data/tabular/Farms.csv")
+```
+
+
+# Get Info
+```{r}
+str(forest)        # Finding out about the forest layer
+nrow(forest)       # How many observations?
+ncol(forest)       # How many attributes?
+
+str(farms)         # Finding out about the farms layer
+nrow(farms)        # How many observations?
+ncol(farms)        # How many attributes?
+```
+
+
+# Mapping
+```{r}
+## Create map
+tm_shape(forest) +
+  tm_polygons("STCTY")
+```
+
+# Subsetting and Filtering
+``` {r}
+subset.forest <- subset(forest, STFIPS == 37)   # Filter out everything but NC
+nrow(subset.forest)   # Print number of rows
+```
+
+Here, I filtered out every observation that is not in North Carolina (a.k.a State FIPS code 37). To see if I did it right, I looked at the number of rows left. Since the number of rows is 100, which is how many counties are in NC, I was successful!
+
+```{r}
+
+## Create map
+tm_shape(subset.forest) +
+  tm_polygons("TWETLND")
+```

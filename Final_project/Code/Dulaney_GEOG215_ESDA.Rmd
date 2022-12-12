@@ -1,0 +1,211 @@
+---
+title: "Assignment #7, Initial ESDA"
+author: "Casey Dulaney"
+date: "11/10/2021"
+output: html_document
+---
+
+### Libraries
+```{r}
+library(sf)
+library(geojsonsf)  
+library(tmap)
+library(tidyverse)
+library(dplyr)
+library(card)
+library(spdep)
+library(spatstat)
+library(maptools)
+```
+
+
+
+### Download and Read in Data
+
+
+```{r}
+download.file("https://linc.osbm.nc.gov/explore/dataset/outdoor-recreation-acreage/download/?format=geojson&timezone=America/New_York&lang=en", "C:/Users/Casey/Documents/GEOG215.FA21/Final_project/Data/sp/Land_Owned.zip")
+
+nc_land <- geojson_sf("C:/Users/Casey/Documents/GEOG215.FA21/Final_project/Data/sp/CountyLandAcreage.zip")
+
+head(nc_land)
+
+```
+
+### Data Cleaning
+
+```{r}
+str(nc_land)
+
+## Map
+
+tmap_mode("view")
+
+tm_shape(nc_land) +
+  tm_polygons()
+
+
+```
+```{r}
+state_owned <- subset(nc_land, variable == "State Outdoor Recreation Acreage")
+nrow(state_owned)
+
+fed_owned <- subset(nc_land, variable == "Federal Outdoor Recreation Acreage")
+nrow(fed_owned)
+
+local_owned <- subset(nc_land, variable == "Local Outdoor Recreation Acreage")
+nrow(local_owned)
+
+```
+
+I will be looking at the "locally-owned" variable as my variable of interest. This will tell us information about the land owned at the county or municipal level. 
+
+
+## Descriptive Statistics
+
+```{r}
+nrow(local_owned)
+min(local_owned$value)
+max(local_owned$value)
+mean(local_owned$value)
+sd(local_owned$value)
+sum(local_owned$value)
+```
+
+From this, we see that there are 100 rows, meaning that all 100 NC counties are represented here. The "value" column here is the area of locally-owned land, in acres. The acreage ranges from 5 acres to 23151 acres, for an average of 1076.03 acres. The standard deviation is very high, 2941.515 acres, which leads one to believe that there is a lot of variation among the counties.
+
+
+## Boxplot
+```{r}
+qplot(x=value, data=local_owned, bins=50)
+```
+
+The boxplot shows that most counties fall between 0-5000 locally-owned acres. There are several counties that have significantly higher locally-owned acres, with the maximum falling almost twice as high as the second-highest. It is quite interesting that the maximum is so far ahead of all of the other counties. 
+
+
+## Chloropleth Maps
+
+```{r}
+
+tm_shape(local_owned) + 
+  tm_polygons("value", 
+              style = "jenks", 
+              palette = "YlOrRd",
+              lwd = 0.25,
+              border.col = "black",
+              border.alpha = 0.5,
+              title = "Locally Owned Land Acreage in NC")
+```
+
+From the map, we can see that the counties with the largest areas of locally-owned land are Mecklenburg, Wake, and Guilford counties, which are also counties with high populations. Most high-acreage counties are in the middle of the state. In fact, the geographic variation tends to match up with counties that probably have higher populations, since the Piedmont is where the urban counties are in NC. This matches up with my expectations, as I hypothesized that the counties with higher populations would have more locally-owned properties like parks. I am guessing that the opposite is true for federally- and state-managed areas (fewer people=more state and national parks), so I will be interested in analyzing that in the time to come. 
+
+
+This research answers part of my research question, "Which parts of the state have the highest number of government owned parks?" Namely, it answers the question on the local level; I still need to analyze the data through a state and federal lens, as well as a summation of all three levels to see which areas have the most parks. This ESDA excited me to work on the project because now I know that I have solid data to work with. I also think that another layer of population data would go well with this data, as there seems to be a clear connection between population and locally-owned land. 
+
+
+
+# Spatial Analysis
+
+## Moran's I
+
+```{r}
+local_owned$local_prop <- local_owned$value / sum(local_owned$value)
+
+local_owned_queen <- poly2nb(local_owned, 
+                           queen = TRUE)
+
+local_owned_queen_weight <-  nb2listw(local_owned_queen, 
+                            style = "B",         
+                            zero.policy = TRUE)  
+
+local_moran <- moran.test(local_owned$local_prop,
+                           local_owned_queen_weight,         
+                           randomisation = TRUE,   
+                           zero.policy = TRUE)  
+
+## Summary
+local_moran
+
+
+
+```
+
+
+# LISA
+```{r lisa, message = FALSE, warning = FALSE}
+
+#
+# LISA -- Local Moran's I
+#
+local_lisa <- localmoran(local_owned$local_prop,        # The column in your sp data 
+                          local_owned_queen_weight,          # Weights object
+                          zero.policy = TRUE) %>%  # Best to keep TRUE for LISA
+  as.data.frame()  # Make result into data frame
+
+## To get "nice" LISA categories for mapping
+## takes a bit of work in R, unfortunately
+
+# Scale the input data to deviation from mean
+cDV <- local_owned$local_prop - mean(local_owned$local_prop) 
+
+# Get spatial lag values for each observation
+# These are the neighbors' values!
+lagDV <- lag.listw(local_owned_queen_weight, local_owned$local_prop)
+
+# Scale the lag values to deviation from mean
+clagDV <- lagDV - mean(lagDV, na.rm = TRUE)
+
+# Add holder column with all 0s
+local_lisa$Cat <- rep("0", nrow(local_lisa))
+
+# This simply adds a label based on the values
+local_lisa$Cat[which(cDV > 0 & clagDV > 0 & local_lisa[,5] < 0.05)] <- "HH" 
+local_lisa$Cat[which(cDV < 0 & clagDV < 0 & local_lisa[,5] < 0.05)] <- "LL"      
+local_lisa$Cat[which(cDV < 0 & clagDV > 0 & local_lisa[,5] < 0.05)] <- "LH"
+local_lisa$Cat[which(cDV > 0 & clagDV < 0 & local_lisa[,5] < 0.05)] <- "HL"
+
+## Quick SUMMARY of LISA output
+table(local_lisa$Cat)
+
+## Add LISA category column to the spatial data
+## for mapping!
+local_owned$LISACAT <- local_lisa$Cat
+
+# Plot two maps together!
+# First, the chorolpleth map
+local.tmap <- tm_shape(local_owned) + 
+  tm_polygons("local_prop",
+              title = "Proportion of Locally Owned State Land",
+              style = "jenks",
+              palette = "Reds",
+              border.col = "Black",
+              border.alpha = 0.25,
+              legend.hist = TRUE) +
+  tm_layout(legend.outside = TRUE)
+# Second the LISA map
+lisa.tmap <- tm_shape(local_owned) + 
+  tm_polygons("LISACAT", 
+              title = "LISA Category",
+              style = "cat", 
+              palette = c("grey", 
+                          "red",
+                          "lightblue",
+                          "blue"), 
+              border.col = "Black", 
+              border.alpha = 0.25) +
+  tm_layout(legend.outside = TRUE)
+# This command maps them together!
+tmap_arrange(local.tmap, lisa.tmap)  
+
+### For LISA mapping above, use the following pallette
+### option if you have observations in all four LISA
+### categories (plus 0s)
+#              palette = c("grey",        # Not significant (0)
+#                          "red",         # High High (HH)
+#                          "pink",        # High Low (HL)
+#                          "lightblue",   # Low High (LH)
+#                          "blue"),       # Low Low
+
+```
+
+For the Moran's I test, the coefficient was at .05, meaning the proportion of land in the state that is locally-owned was more clustered on the county level than dispersed. The p-value for the Moran's I test is relatively low. Depending on the alpha level used, we could or could not reject the null. hypothesis. If we were to reject the null hypothesis, we could conclude that the results of the test were unlikely to occur by chance. Based on the LISA test, 3 counties have HH results and 5 have LH results. Those three counties had high spatial autocorrelation (and therefore, high acreage of locally-owned land compared to state totals), and so did their neighbors. The LH counties were outliers, meaning they had low acreage of locally-owned land while their neighbors had high acreages. 
